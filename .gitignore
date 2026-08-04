@@ -1,0 +1,26 @@
+# Python — bytecode, build output, tool caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# uv: the lockfile is committed; the environment is not.
+
+# Environment & secrets
+.env
+.env.*
+
+# Run artifacts
+logs/
+runs/
+*.log
+
+# OS & editors
+.DS_Store
+.vscode/
+.idea/
