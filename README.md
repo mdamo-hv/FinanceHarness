@@ -35,7 +35,9 @@ cited report.
   (`prev:<call_id>.<path>`), so a price series becomes a correlation with no
   retyping.
 - **Progressive disclosure.** The core loop stays in the prompt; everything else
-  waits in a catalog and loads on request, so breadth costs nothing until used.
+  waits in a catalog and loads on request, so breadth costs nothing until used —
+  and a data provider exposing dozens of tools collapses to a single catalog
+  line the agent searches.
 - **Extensible without code.** A `SKILL.md` file composes existing tools into a
   reusable workflow. Drop one in and it is discovered.
 - **Grounded.** Every figure traces back to the tool or source it came from.
@@ -44,6 +46,43 @@ cited report.
   toolkit to any MCP client.
 - **Watchable.** A React console streams the run — plan, tool calls, the data
   behind them, sources, and the report as it is written.
+
+## How it fits together
+
+Three ways in, two sources of tools. The agent loop is the same in every case,
+and every tool call — first-party or borrowed — goes through one dispatcher, so
+argument coercion, `prev:` chaining and error handling are identical.
+
+```mermaid
+flowchart TB
+    CLI["CLI · fh -p"]
+    WEB["React console · web/"]
+    EXT["MCP client · Claude Desktop, IDE"]
+
+    SVC["HTTP + SSE service · fh serve"]
+    SRV["MCP server · fh mcp"]
+    LOOP["Agent loop"]
+    DISP["Dispatcher · coercion, prev: chaining, never-raise"]
+
+    OWN["First-party tools<br/>web · equity · market · valuation · risk"]
+    HUB["MCP hub"]
+    LOCAL["Local stdio server<br/>private data, never leaves the machine"]
+    REMOTE["Remote HTTP server"]
+
+    CLI --> LOOP
+    WEB --> SVC
+    SVC --> LOOP
+    EXT --> SRV
+    SRV --> DISP
+    LOOP --> DISP
+    DISP --> OWN
+    DISP --> HUB
+    HUB --> LOCAL
+    HUB --> REMOTE
+```
+
+(The figure above is the stack as published in the paper; it predates the web
+console and the MCP layer shown here.)
 
 ## Get Started
 
@@ -54,6 +93,12 @@ FinanceHarness needs [`uv`](https://docs.astral.sh/uv/):
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
+
+That is enough for the CLI, the service, and the MCP server. The [web
+console](#web-console-react) additionally needs Node (`^20.19` or `>=22.12`, what
+Vite 8 requires) and npm; nothing else in the project does.
+
+`make help` lists every entry point.
 
 ### Install
 
@@ -238,7 +283,9 @@ fh serve  # HTTP+SSE on 127.0.0.1:8080
 | `GET /sessions`, `/sessions/{id}`, `/status`, `/health` | session + readiness |
 
 The SSE frame protocol is documented in
-[`financeharness/service/events.py`](financeharness/service/events.py).
+[`financeharness/service/events.py`](financeharness/service/events.py), and the
+running service serves its own OpenAPI schema at `/openapi.json` with an
+interactive reference at `/docs`.
 
 ## MCP integration
 
@@ -359,6 +406,76 @@ compute_risk_var(prices="prev:call_1.bars[*].close", confidence=0.95)
 
 The data and compute tools need no API key at all — only `visit` and
 `deep_research` call a model.
+
+## Reference
+
+### Repository layout
+
+```
+financeharness/
+  cli.py         the `fh` / `financeharness` entry point: research, serve, mcp
+  research.py    one-shot entry point — assemble the harness, run a trajectory
+  clarify.py     the pre-research scoping pass
+  runtime/       agent loop, never-raise dispatch, registries, chaining, recovery
+  providers/     backbone seam (native Gemini + any OpenAI-compatible endpoint)
+  tools/         research (search/visit/cite) + equity/market data + valuation/risk
+  skills/        bundled SKILL.md workflow recipes
+  mcp/           MCP both ways — hub (borrow tools), server (serve the harness)
+  service/       FastAPI HTTP+SSE service; also serves web/dist when built
+web/             the React console (Vite); src/useRun.js folds the SSE protocol
+configs/         providers.json · runtime.json · mcp.json
+examples/mcp/    a local MCP data source you can actually run
+```
+
+### Environment variables
+
+Nothing here is required — every one of these overrides a default, and the
+defaults work. Config precedence throughout is *built-in defaults < JSON file <
+environment*.
+
+**Credentials** — a backbone becomes available when its key is set.
+
+| Variable | Effect |
+|---|---|
+| `GEMINI_API_KEY` | enables the `gemini` backbone (the default) |
+| `OPENAI_API_KEY` | enables the `gpt` backbone |
+| `OPENROUTER_API_KEY` | enables the `openrouter` backbone (many vendors, one key) |
+
+**Backbone selection** — see [`configs/providers.json`](configs/providers.json).
+
+| Variable | Effect |
+|---|---|
+| `FH_PROFILE` | the default backbone (else the file's `default`, else `gemini`) |
+| `FH_<NAME>_BASE_URL` | override one profile's endpoint, e.g. `FH_QWEN_BASE_URL` |
+| `FH_<NAME>_MODEL` | override one profile's model id, e.g. `FH_OPENROUTER_MODEL` |
+
+**MCP** — see [`configs/mcp.json`](configs/mcp.json).
+
+| Variable | Effect |
+|---|---|
+| `FH_MCP_CONFIG` | use a different MCP config file |
+| `FH_MCP_DISABLE` | `1` turns the whole external-MCP integration off |
+
+**Runtime limits** — anti-runaway backstops, not a quality budget. See
+[`configs/runtime.json`](configs/runtime.json).
+
+| Variable | Effect |
+|---|---|
+| `MAX_TOKENS` | starting output budget per model call (the loop may escalate) |
+| `PER_CALL_TIMEOUT_S` | hard timeout on one model call |
+| `MAX_RUN_DURATION_S` | wall-clock cap for a whole run |
+| `MAX_LLM_CALL_PER_RUN` | maximum agent rounds |
+| `CONTEXT_WINDOW` | the window compaction budgets against |
+
+**Paths and the console**
+
+| Variable | Effect |
+|---|---|
+| `FH_SKILLS_DIR` | extra skill roots (`os.pathsep`-separated), highest precedence |
+| `FH_SESSIONS_DIR` | where the service stores sessions (default `~/.financeharness/sessions`) |
+| `FH_PORTFOLIO_CSV` | holdings file for the bundled example MCP server |
+| `FH_API_URL` | backend the console's **dev** server proxies to (default `http://127.0.0.1:8080`) |
+| `VITE_API_BASE` | API base baked into a console **build** (default: same origin) |
 
 ## Benchmark
 
