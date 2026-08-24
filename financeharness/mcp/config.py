@@ -21,6 +21,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -59,6 +60,16 @@ class McpServerConfig(BaseModel):
   # Bridge the server's resources (files, tables, documents) as a list/read tool
   # pair, so a data source with no tools of its own is still readable.
   resources: bool = True
+  # How this server's tools reach the model's prompt catalog:
+  #   "full"  — one catalog line per tool (precise; costs prompt on every call)
+  #   "index" — one line for the server, listing its tool names; the model pulls
+  #             the schemas it wants with load_tool
+  #   "auto"  — full for a small server, index past `catalog_threshold`
+  # A real data provider can expose 90+ tools; cataloguing all of them would
+  # price its entire surface into every model call, which is exactly what the
+  # deferred tier exists to avoid.
+  catalog: Literal["auto", "full", "index"] = "auto"
+  catalog_threshold: int = 12
 
   def resolved_transport(self):
     """The effective transport: explicit, else inferred from url/command."""
@@ -67,9 +78,15 @@ class McpServerConfig(BaseModel):
     return "http" if self.url else "stdio"
 
   def target(self):
-    """A short human-readable description of what this server points at."""
+    """A short human-readable description of what this server points at.
+
+    Redacted: this string is surfaced to the UI, the ``/mcp`` response, the run's
+    SSE stream, and any saved trajectory. MCP endpoints commonly carry the
+    credential in the query string (``?apikey=…``), so it must not travel with
+    the identity of the server.
+    """
     if self.resolved_transport() == "http":
-      return self.url or "(no url)"
+      return redact_url(self.url) if self.url else "(no url)"
     return " ".join([self.command or "(no command)", *self.args])
 
   def usable(self):
@@ -102,6 +119,55 @@ class McpServerConfig(BaseModel):
         "url": sub(self.url),
         "headers": {k: sub(v) for k, v in self.headers.items()},
     })
+
+
+# Query-parameter names whose values are credentials. Matched case-insensitively
+# as a substring, so `apikey`, `api_key`, `X-Api-Key` and `access_token` all hit.
+_SECRET_PARAM_HINTS = (
+    "key",
+    "token",
+    "secret",
+    "password",
+    "pwd",
+    "auth",
+    "sig",
+)
+_REDACTED = "***"
+
+
+def redact_url(url):
+  """A URL safe to display: credential query values and any userinfo masked.
+
+  Everything else survives, because scheme/host/path is what identifies the
+  server to a reader.
+  """
+  if not isinstance(url, str) or not url:
+    return url
+  try:
+    parts = urlsplit(url)
+  except ValueError:  # not parseable: don't risk showing it raw
+    return _REDACTED
+  netloc = parts.netloc
+  if "@" in netloc:  # user:pass@host
+    netloc = f"{_REDACTED}@{netloc.rsplit('@', 1)[1]}"
+  query = parts.query
+  if query:
+    pairs = parse_qsl(query, keep_blank_values=True)
+    query = urlencode(
+        [
+            (
+                k,
+                _REDACTED
+                if any(h in k.lower() for h in _SECRET_PARAM_HINTS)
+                else v,
+            )
+            for k, v in pairs
+        ],
+        # Keep the mask and an unexpanded ${VAR} legible rather than percent-encoded;
+        # this string is for a human, not for dialling.
+        safe="*${}",
+    )
+  return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
 
 
 def _read_file(path):

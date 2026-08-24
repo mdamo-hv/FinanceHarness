@@ -39,6 +39,7 @@ from financeharness.runtime.tool_registry import ToolError, ToolResponse, ToolSp
 _MIN_DESCRIPTION_CHARS = 30  # the registry's floor for catalog routing signal
 _UNSAFE_NAME = re.compile(r"[^a-zA-Z0-9_]+")
 _RESOURCE_LIST_LIMIT = 200
+_FIND_TOOLS_LIMIT = 40  # tool descriptions returned per find_tools call
 
 
 def _slug(text):
@@ -69,6 +70,21 @@ class ListResourcesRequest(BaseModel):
   model_config = {"extra": "forbid"}
 
 
+class FindToolsRequest(BaseModel):
+  """Input for searching one MCP server's tool surface."""
+
+  model_config = {"extra": "forbid"}
+
+  query: str | None = Field(
+      None,
+      description=(
+          "Optional filter — a word or fragment matched against tool names and"
+          " descriptions (e.g. 'dividend', 'macro', 'options'). Omit to list"
+          " every tool."
+      ),
+  )
+
+
 class ReadResourceRequest(BaseModel):
   """Input for reading one MCP resource by URI."""
 
@@ -93,6 +109,7 @@ class McpServerState:
   connected: bool = False
   error: str | None = None
   instructions: str | None = None
+  catalog_mode: str = "full"  # "full" | "index" (see McpHub._add_server)
   tools: list[str] = field(default_factory=list)
   resources: list[dict[str, Any]] = field(default_factory=list)
 
@@ -104,6 +121,7 @@ class McpServerState:
         "connected": self.connected,
         "error": self.error,
         "instructions": self.instructions,
+        "catalog_mode": self.catalog_mode,
         "tools": list(self.tools),
         "resource_count": len(self.resources),
     }
@@ -197,7 +215,12 @@ class McpHub:
     """Connect one server, discover its surface, and build its tool specs."""
     cfg = raw_cfg.expanded()
     state = McpServerState(
-        name=cfg.name, transport=cfg.resolved_transport(), target=cfg.target()
+        name=cfg.name,
+        transport=cfg.resolved_transport(),
+        # The *unexpanded* target, so a config that references a credential by
+        # ${VAR} displays the variable rather than its value. target() redacts a
+        # literal one on top of that.
+        target=raw_cfg.target(),
     )
     self._states.append(state)
     try:
@@ -211,13 +234,27 @@ class McpHub:
     state.instructions = getattr(client, "instructions", None)
 
     allow = set(cfg.tools)
-    for tool in tools:
-      if allow and tool.name not in allow:
-        continue
-      spec = self._tool_spec(client, cfg, tool)
+    selected = [t for t in tools if not allow or t.name in allow]
+
+    # A server's whole tool surface is priced into every model call if each tool
+    # takes a catalog line. Past a threshold, collapse to one line for the server
+    # and let the model pull schemas by name — the same progressive disclosure
+    # the first-party deferred tier uses, one level up.
+    indexed = cfg.catalog == "index" or (
+        cfg.catalog == "auto" and len(selected) > cfg.catalog_threshold
+    )
+    state.catalog_mode = "index" if indexed else "full"
+
+    for tool in selected:
+      spec = self._tool_spec(client, cfg, tool, in_catalog=not indexed)
       if spec is not None:
         state.tools.append(tool.name)
         self._specs.append(spec)
+
+    if indexed and state.tools:
+      index = self._index_spec(cfg, state, selected)
+      if index is not None:
+        self._specs.append(index)
 
     if cfg.resources:
       await self._add_resource_tools(client, cfg, state)
@@ -259,8 +296,12 @@ class McpHub:
     self._names.add(name)
     return name
 
-  def _tool_spec(self, client, cfg, tool):
-    """One MCP tool → one deferred harness ToolSpec."""
+  def _tool_spec(self, client, cfg, tool, *, in_catalog=True):
+    """One MCP tool → one deferred harness ToolSpec.
+
+    ``in_catalog=False`` keeps it callable (and loadable by name) but out of the
+    prompt; the server's index tool stands in for it.
+    """
     wire = self._claim(f"{TOOL_PREFIX}_{_slug(cfg.name)}_{_slug(tool.name)}")
     if wire is None:
       return None
@@ -288,6 +329,77 @@ class McpHub:
         request_schema=request_schema,
         handler=handler,
         tags=(TOOL_PREFIX, cfg.name),
+        in_catalog=in_catalog,
+    )
+
+  def _index_spec(self, cfg, state, tools):
+    """One catalog entry standing in for a large server's whole tool surface.
+
+    Its description carries the tool *names* — the discovery key, and cheap —
+    while the descriptions stay behind a call. The model narrows with a query,
+    then pulls the schemas it wants with ``load_tool``, exactly as it would for a
+    first-party deferred tool.
+    """
+    wire = self._claim(f"{TOOL_PREFIX}_{_slug(cfg.name)}_find_tools")
+    if wire is None:
+      return None
+    catalog = [
+        {
+            "name": t.name,
+            "wire_name": f"{TOOL_PREFIX}_{_slug(cfg.name)}_{_slug(t.name)}",
+            "description": (getattr(t, "description", None) or "").strip(),
+        }
+        for t in tools
+    ]
+    names = ", ".join(entry["name"] for entry in catalog)
+
+    async def handler(req):
+      query = (req.query or "").strip().lower()
+      hits = [
+          e
+          for e in catalog
+          if not query
+          or query in e["name"].lower()
+          or query in e["description"].lower()
+      ]
+      if not hits:
+        raise ToolError(
+            f"No tool on the '{cfg.name}' MCP server matches {req.query!r}. "
+            f"Available: {names}"
+        )
+      lines = [
+          f"- `{e['wire_name']}` ({e['name']}): {e['description'] or '(no description)'}"
+          for e in hits[:_FIND_TOOLS_LIMIT]
+      ]
+      note = (
+          f"\n\n…and {len(hits) - _FIND_TOOLS_LIMIT} more; narrow the query."
+          if len(hits) > _FIND_TOOLS_LIMIT
+          else ""
+      )
+      body = "\n".join(lines)
+      return ToolResponse(
+          markdown=(
+              f"{len(hits)} tool(s) on the '{cfg.name}' MCP server"
+              + (f" matching {req.query!r}" if query else "")
+              + f":\n\n{body}{note}\n\nLoad the ones you need with"
+              " `load_tool`, then call them."
+          ),
+          structured={"tools": hits[:_FIND_TOOLS_LIMIT]},
+          meta={"mcp_server": cfg.name, "matched": len(hits)},
+      )
+
+    return ToolSpec(
+        name=wire,
+        display_name=f"{TOOL_PREFIX}.{cfg.name}.find_tools",
+        tier="deferred",
+        description=(
+            f"Search the {len(catalog)} tools the '{cfg.name}' MCP server"
+            " exposes, and get the wire names to pass to `load_tool`. Their"
+            f" names: {names}."
+        ),
+        request_schema=FindToolsRequest,
+        handler=handler,
+        tags=(TOOL_PREFIX, cfg.name, "discovery"),
     )
 
   def _resource_specs(self, client, cfg, state):

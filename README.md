@@ -235,6 +235,9 @@ Two transports:
       "command": "uv",
       "args": ["run", "python", "examples/mcp/local_portfolio.py"]
     },
+    "eodhd": {
+      "url": "https://mcp.eodhd.com/v1/mcp?apikey=${EODHD_API_KEY}"
+    },
     "internal-api": {
       "url": "https://mcp.internal.example.com/mcp",
       "headers": { "Authorization": "Bearer ${INTERNAL_MCP_TOKEN}" },
@@ -248,6 +251,30 @@ Two transports:
 `tools` is an optional allowlist. A server that won't connect is reported and
 skipped — the run keeps every tool it does have. `FH_MCP_DISABLE=1` turns the
 integration off; `FH_MCP_CONFIG` points at a different file.
+
+Server identity travels with the run — into the UI, the API, and any saved
+trajectory — so credentials are stripped from it: a URL displays as
+`…/mcp?apikey=***`, and userinfo as `https://***@host`. Many MCP endpoints carry
+their key in the query string, and a trajectory is a file you might share.
+
+#### Prompt cost of a large server
+
+A real data provider can expose 90+ tools, and one catalog line each would price
+its whole surface into every model call — the thing the deferred tier exists to
+avoid. Past `catalog_threshold` (12) tools, a server collapses to a single
+catalog entry listing its tool *names*, plus a `find_tools` search; the model
+narrows, `load_tool`s the schemas it wants, and calls them. Same progressive
+disclosure the first-party tools use, one level up.
+
+Measured on EODHD's MCP server (91 tools), system prompt per model call:
+
+| | Tokens |
+|---|---|
+| harness alone | 3,146 |
+| + 91 tools catalogued individually | 24,037 |
+| + 91 tools indexed (the default) | 3,973 |
+
+Force it either way with `"catalog": "full" | "index"` per server.
 
 [`examples/mcp/local_portfolio.py`](examples/mcp/local_portfolio.py) is a working
 local data source — a CSV of holdings exposed as three tools and a resource.

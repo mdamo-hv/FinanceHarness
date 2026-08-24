@@ -8,6 +8,8 @@
 
 import { useState } from 'react'
 
+const TOOL_PREVIEW = 8 // a real provider exposes dozens; name the first few
+
 const CLIENT_SNIPPET = (cwd) =>
   JSON.stringify(
     {
@@ -40,9 +42,17 @@ function Server({ server }) {
         )}
       </div>
       <div className="target">{server.target}</div>
+      {server.catalog_mode === 'index' && (
+        <div className="sub" title="Too many tools to list in the prompt: the agent searches them, then loads what it needs.">
+          indexed — the agent discovers these on demand
+        </div>
+      )}
       {server.error && <div className="sub" style={{ color: 'var(--bad)' }}>{server.error}</div>}
       {!!server.tools?.length && (
-        <div className="tool" style={{ marginTop: 5 }}>{server.tools.join(', ')}</div>
+        <div className="tool" style={{ marginTop: 5 }}>
+          {server.tools.slice(0, TOOL_PREVIEW).join(', ')}
+          {server.tools.length > TOOL_PREVIEW && ` … +${server.tools.length - TOOL_PREVIEW}`}
+        </div>
       )}
     </div>
   )
