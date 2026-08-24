@@ -39,6 +39,11 @@ cited report.
 - **Extensible without code.** A `SKILL.md` file composes existing tools into a
   reusable workflow. Drop one in and it is discovered.
 - **Grounded.** Every figure traces back to the tool or source it came from.
+- **Connected.** MCP in both directions: borrow tools from other MCP servers
+  (including a local process holding private data), and serve this harness's own
+  toolkit to any MCP client.
+- **Watchable.** A React console streams the run — plan, tool calls, the data
+  behind them, sources, and the report as it is written.
 
 ## Get Started
 
@@ -103,6 +108,9 @@ Options: `--mode {auto|research|analytical}`, `--profile NAME`, `--reader NAME`,
 `--save PATH`, `--quiet`. Exit code is `0` when the agent produced an answer,
 `1` otherwise.
 
+Two sub-commands: `fh serve` (the HTTP+SSE service, and the React console when
+built) and `fh mcp` (serve the harness to MCP clients). Both are covered below.
+
 ### Modes
 
 Modes are prompt variants over a constant tool registry, so switching never
@@ -129,6 +137,7 @@ demand with `load_tool`.
 | **Market data** | `data_market_rates`, `data_market_indices` |
 | **Valuation** | `compute_valuation_dcf`, `compute_valuation_dcf_sensitivity`, `compute_valuation_wacc` |
 | **Risk** | `compute_risk_correlation`, `compute_risk_var`, `compute_risk_beta` |
+| **MCP** (optional) | `mcp_<server>_<tool>` — anything a configured MCP server exposes |
 
 Company and market data are sourced through `yfinance`.
 
@@ -150,14 +159,147 @@ Discovery runs in increasing precedence: bundled `financeharness/skills/` → a
 project `./skills/` → `FH_SKILLS_DIR`. A project skill overrides a built-in by
 name, and a malformed one is skipped rather than fatal.
 
-## HTTP + SSE service (optional)
+## Web console (React)
 
-The package also ships an HTTP+SSE service for a remote client or programmatic
-use; it is entirely separate from the CLI:
+`web/` is a React console over the service: one question at a time, streamed. It
+shows the plan as the agent maintains it, every tool call with the data that came
+back, the sources filling as pages are read, and the report as it is written —
+so the evidence sits next to the answer instead of behind it.
+
+```bash
+make install web-install      # Python env + npm install
+make serve                    # the API on :8080  (terminal 1)
+make web                      # the console on :5173 (terminal 2)
+```
+
+The dev server proxies `/api` to the service, so the console talks to one origin
+(`FH_API_URL` retargets the backend). For a single process, build it once and let
+the service serve it:
+
+```bash
+make app        # web-build + serve → API and UI together on :8080
+```
+
+What the console gives you beyond the CLI: the live trace (rounds, tool
+arguments, the grounding data behind each figure), the sources rail numbered to
+match the report's `[N]` markers, the scoping dialog when a question is
+genuinely ambiguous, multi-turn sessions with a context meter and one-click
+compaction, a backbone picker, markdown/trajectory export, and a panel showing
+which MCP data sources this run can reach.
+
+### HTTP + SSE service
+
+The service is useful on its own — for a remote client, an eval harness, or
+anything programmatic:
 
 ```bash
 fh serve  # HTTP+SSE on 127.0.0.1:8080
 ```
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /research` | run a trajectory; sync JSON, or SSE with `stream=true` |
+| `POST /clarify` | scope a question before researching (fail-open) |
+| `POST /compact` | summarize a session's older turns to free context |
+| `GET /models` | backbones + credential availability |
+| `GET /mcp` | configured MCP servers (`?probe=true` dials them) |
+| `GET /sessions`, `/sessions/{id}`, `/status`, `/health` | session + readiness |
+
+The SSE frame protocol is documented in
+[`financeharness/service/events.py`](financeharness/service/events.py).
+
+## MCP integration
+
+The harness speaks the [Model Context Protocol](https://modelcontextprotocol.io)
+in both directions.
+
+### Borrow tools from other MCP servers (inbound)
+
+Configure a server in [`configs/mcp.json`](configs/mcp.json) and its tools join
+every run's catalog, in the deferred tier — the agent sees them alongside the
+first-party tools and loads what the question needs. Its resources (files,
+tables, documents) are bridged too, as a list/read pair, so a source with no
+tools of its own is still readable.
+
+Two transports:
+
+| Transport | Config | For |
+|---|---|---|
+| stdio | `command` + `args` | a local process — **private data that never leaves the machine** |
+| http | `url` + `headers` | a streamable-HTTP MCP endpoint, local or remote |
+
+```json
+{
+  "servers": {
+    "portfolio": {
+      "command": "uv",
+      "args": ["run", "python", "examples/mcp/local_portfolio.py"]
+    },
+    "internal-api": {
+      "url": "https://mcp.internal.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${INTERNAL_MCP_TOKEN}" },
+      "tools": ["lookup_customer"]
+    }
+  }
+}
+```
+
+`${VAR}` is expanded from the environment, so tokens stay out of the file.
+`tools` is an optional allowlist. A server that won't connect is reported and
+skipped — the run keeps every tool it does have. `FH_MCP_DISABLE=1` turns the
+integration off; `FH_MCP_CONFIG` points at a different file.
+
+[`examples/mcp/local_portfolio.py`](examples/mcp/local_portfolio.py) is a working
+local data source — a CSV of holdings exposed as three tools and a resource.
+Enable the `portfolio` entry in `configs/mcp.json` and ask a question only your
+own data can answer:
+
+```bash
+fh -p "Given my holdings, what is my concentration risk in semis?"
+```
+
+Borrowed tools appear as `mcp_<server>_<tool>` in the trace, so a trajectory
+always says which figures came from outside the harness.
+
+### Serve the harness to MCP clients (outbound)
+
+`fh mcp` exposes the harness over MCP: every data, valuation, risk and research
+tool with its real schema, the bundled skills as prompts *and* resources, and a
+`deep_research` tool that runs the whole loop and returns a cited report.
+
+```bash
+fh mcp                          # stdio — what an MCP host spawns
+fh mcp --http --port 8765       # streamable HTTP, for a remote client
+fh mcp --list                   # what would be exposed, no client needed
+```
+
+For Claude Desktop (or any MCP client), point it at the checkout:
+
+```json
+{
+  "mcpServers": {
+    "financeharness": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/FinanceHarness", "fh", "mcp"],
+      "env": { "GEMINI_API_KEY": "..." }
+    }
+  }
+}
+```
+
+Calls route through the harness dispatcher, so an MCP client inherits the same
+argument coercion, the same actionable error text, and the same reference
+chaining a first-party run gets: every result carries a `call_id`, and
+`prev:<call_id>.<path>` feeds one tool's output into the next without the client
+ever holding the numbers.
+
+```
+data_equity_prices(ticker="AAPL", period="3mo")   → call_1
+compute_risk_var(prices="prev:call_1.bars[*].close", confidence=0.95)
+```
+
+The data and compute tools need no API key at all — only `visit` and
+`deep_research` call a model.
 
 ## Benchmark
 
