@@ -72,11 +72,13 @@ suits the machine you are on:
 |---|---|---|---|
 | `gemini` | `gemini-3.6-flash` (Google) | cloud | `GEMINI_API_KEY` |
 | `gpt` | `gpt-5.6` (OpenAI) | cloud | `OPENAI_API_KEY` |
+| `openrouter` | any OpenRouter model (many vendors, one key) | cloud | `OPENROUTER_API_KEY` |
 | `qwen` | Qwen (open-weight) | GPU server | a local vLLM stack |
 
 ```bash
-export GEMINI_API_KEY=...  # makes the Google/Gemini backbone available
-export OPENAI_API_KEY=...  # makes the OpenAI/GPT backbone available
+export GEMINI_API_KEY=...      # makes the Google/Gemini backbone available
+export OPENAI_API_KEY=...      # makes the OpenAI/GPT backbone available
+export OPENROUTER_API_KEY=...  # makes the OpenRouter backbone available
 
 # Or point at an OpenAI-compatible vLLM stack you serve yourself:
 export FH_QWEN_BASE_URL=http://gpu-box:8000/v1
@@ -85,6 +87,36 @@ export FH_QWEN_READER_BASE_URL=http://gpu-box:8001/v1   # the long-document read
 
 Pick a backbone per run with `--profile NAME`, or change the default in
 [`configs/providers.json`](configs/providers.json) (or via `FH_PROFILE`).
+
+#### OpenRouter
+
+`openrouter` reaches many vendors' models through one key over the same
+OpenAI-compatible wire, so it needs no extra machinery — just a key and the
+model slug you want to route to:
+
+```bash
+export OPENROUTER_API_KEY=...
+export FH_OPENROUTER_MODEL=openai/gpt-5.1          # any `vendor/model` slug
+fh -p "Estimate NVDA's intrinsic value with a DCF." --profile openrouter
+```
+
+Pin a slug (instead of exporting it per run) and add OpenRouter's routing
+preferences in [`configs/providers.json`](configs/providers.json):
+
+```json
+{
+  "profiles": {
+    "openrouter": {
+      "model": "anthropic/claude-sonnet-4.5",
+      "extra_body": { "provider": { "order": ["anthropic"], "allow_fallbacks": false } }
+    }
+  }
+}
+```
+
+Pick a slug that calls tools well — the loop is tool-driven, and a model without
+reliable function calling will stall. The backbone reads its own pages, so no
+local reader is required.
 
 ### Run
 
