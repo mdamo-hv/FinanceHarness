@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "description": "React console for the FinanceHarness deep-research service",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
