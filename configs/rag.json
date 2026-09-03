@@ -1,0 +1,10 @@
+{
+  "_comment": "Cyber RAG corpus config. Merged over built-in defaults; env vars (FH_RAG_DB, FH_RAG_EMBED_MODEL, FH_RAG_TOP_K, ...) win. Leave embed_model empty for lexical-only BM25 retrieval (no credentials needed); set it to an embedding model id (e.g. text-embedding-3-small) to make retrieval hybrid, then run `fh rag embed` to backfill vectors for what is already stored. See financeharness/rag/README.md.",
+  "db_path": "~/.financeharness/rag/cyber.sqlite3",
+  "chunk_chars": 1200,
+  "chunk_overlap": 200,
+  "top_k": 6,
+  "embed_model": "",
+  "embed_base_url": "https://api.openai.com/v1",
+  "embed_api_key_env": "OPENAI_API_KEY"
+}
