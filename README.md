@@ -214,9 +214,12 @@ demand with `load_tool`.
 | **Market data** | `data_market_rates`, `data_market_indices` |
 | **Valuation** | `compute_valuation_dcf`, `compute_valuation_dcf_sensitivity`, `compute_valuation_wacc` |
 | **Risk** | `compute_risk_correlation`, `compute_risk_var`, `compute_risk_beta` |
+| **Cyber knowledge (RAG)** | `knowledge_cyber_search`, `knowledge_cyber_ingest`, `knowledge_cyber_status` |
 | **MCP** (optional) | `mcp_<server>_<tool>` — anything a configured MCP server exposes |
 
-Company and market data are sourced through `yfinance`.
+Company and market data are sourced through `yfinance`; the cyber knowledge
+tools retrieve from a local corpus — see
+[Cyber knowledge corpus (RAG)](#cyber-knowledge-corpus-rag).
 
 ## Extend with skills
 
@@ -231,10 +234,43 @@ one with `load_skill` when it fits the task. Bundled:
 | `relative-valuation` | Peer-median multiples applied to the company for an implied range. |
 | `consensus-check` | Sell-side view (targets, estimates, ratings) corroborated against the web. |
 | `equity-deep-dive` | The full workflow: qualitative picture + fundamentals + DCF + comps + consensus. |
+| `cyber-threat-brief` | Grounded security brief: exploitation status, ATT&CK mapping, affected versions, mitigations. |
 
 Discovery runs in increasing precedence: bundled `financeharness/skills/` → a
 project `./skills/` → `FH_SKILLS_DIR`. A project skill overrides a built-in by
 name, and a malformed one is skipped rather than fatal.
+
+## Cyber knowledge corpus (RAG)
+
+A retrieval subsystem that ingests cyber-security knowledge from the internet
+into a local SQLite corpus and returns ranked passages **with their source
+URLs**, so a claim retrieved from it carries a `[N]` citation exactly like a page
+the agent visited.
+
+```bash
+fh rag ingest                    # MITRE ATT&CK + CISA KEV + OWASP + CISA best practices
+fh rag status                    # what the corpus holds
+fh rag query "how is LSASS credential dumping detected" -k 5
+fh rag ingest web --query "kubernetes rbac hardening"   # anything else on the internet
+```
+
+Ingestable sources (`fh rag sources`): **MITRE ATT&CK** (the full STIX bundle —
+techniques, tactics, groups, software, mitigations), **CISA KEV** (CVEs with
+confirmed in-the-wild exploitation), **[CISA cybersecurity best
+practices](https://www.cisa.gov/topics/cybersecurity-best-practices)**, **NVD**
+CVE records, the **OWASP** Cheat Sheet Series, seven security **news/research
+feeds**, plus **open web search** and **explicit URLs** — the curated feeds are a
+high-signal floor, not a ceiling.
+
+Retrieval is hybrid: BM25 finds `CVE-2021-44228` because the string is there,
+vector search finds the persistence technique when the question says "keep access
+after a reboot", and the two ranked lists are fused with Reciprocal Rank Fusion.
+Embeddings are optional — with none configured it runs lexical-only, no
+credentials and no network. The agent reaches the same corpus through three
+deferred tools (`knowledge.cyber.search` / `.ingest` / `.status`) and the
+`cyber-threat-brief` skill.
+
+Full documentation: [`financeharness/rag/README.md`](financeharness/rag/README.md).
 
 ## Web console (React)
 
@@ -419,6 +455,8 @@ financeharness/
   runtime/       agent loop, never-raise dispatch, registries, chaining, recovery
   providers/     backbone seam (native Gemini + any OpenAI-compatible endpoint)
   tools/         research (search/visit/cite) + equity/market data + valuation/risk
+                 + knowledge/ (the cyber RAG tools)
+  rag/           cyber-security retrieval corpus: sources, chunking, store, retrieval
   skills/        bundled SKILL.md workflow recipes
   mcp/           MCP both ways — hub (borrow tools), server (serve the harness)
   service/       FastAPI HTTP+SSE service; also serves web/dist when built
@@ -466,6 +504,19 @@ environment*.
 | `MAX_RUN_DURATION_S` | wall-clock cap for a whole run |
 | `MAX_LLM_CALL_PER_RUN` | maximum agent rounds |
 | `CONTEXT_WINDOW` | the window compaction budgets against |
+
+**Cyber RAG corpus** — see
+[`financeharness/rag/README.md`](financeharness/rag/README.md).
+
+| Variable | Effect |
+|---|---|
+| `FH_RAG_DB` | corpus location (default `~/.financeharness/rag/cyber.sqlite3`) |
+| `FH_RAG_EMBED_MODEL` | set to enable vector search (else lexical BM25 only) |
+| `FH_RAG_EMBED_BASE_URL` | embeddings endpoint (default OpenAI; any compatible one works) |
+| `FH_RAG_EMBED_API_KEY_ENV` | env var holding the embeddings credential |
+| `FH_RAG_TOP_K` | passages returned per query (default 6) |
+| `FH_RAG_CHUNK_CHARS` / `FH_RAG_CHUNK_OVERLAP` | passage geometry (default 1200 / 200) |
+| `NVD_API_KEY` | raises the NVD ingest rate limit |
 
 **Paths and the console**
 

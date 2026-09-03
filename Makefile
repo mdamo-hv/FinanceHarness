@@ -1,6 +1,7 @@
 # FinanceHarness — headless entrypoints. `make help` lists targets.
 .DEFAULT_GOAL := help
-.PHONY: help install run serve mcp mcp-http web web-install web-build app
+.PHONY: help install run serve mcp mcp-http rag-ingest rag-query rag-status \
+        web web-install web-build app
 
 # the service port (override e.g. `make serve PORT=9000`)
 PORT ?= 8080
@@ -24,6 +25,15 @@ mcp:  ## serve the harness to MCP clients over stdio (Claude Desktop, IDEs)
 
 mcp-http:  ## serve the harness over MCP streamable HTTP on $(MCP_PORT)
 	uv run fh mcp --http --port $(MCP_PORT)
+
+rag-ingest:  ## fill the cyber corpus (make rag-ingest SRC="mitre-attack cisa-kev")
+	uv run fh rag ingest $(SRC)
+
+rag-query:  ## retrieve from the cyber corpus: make rag-query Q="log4shell"
+	uv run fh rag query "$(Q)"
+
+rag-status:  ## what the cyber corpus holds
+	uv run fh rag status
 
 web-install:  ## install the web console's dependencies
 	cd web && npm install

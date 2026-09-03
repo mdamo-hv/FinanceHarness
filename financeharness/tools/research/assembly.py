@@ -21,6 +21,7 @@ from financeharness.tools.compute.arithmetic import SPEC as CALC_SPEC
 from financeharness.tools.core.plan import PLAN_SPEC
 from financeharness.tools.data.equity import EQUITY_DATA_SPECS
 from financeharness.tools.data.market import MARKET_DATA_SPECS
+from financeharness.tools.knowledge import build_cyber_specs
 from financeharness.tools.research.citations import build_citations_spec
 from financeharness.tools.research.search import build_search_spec
 from financeharness.tools.research.visit import build_visit_spec
@@ -56,6 +57,11 @@ def build_research_registry(
       )
   )
   registry.register(build_citations_spec(cache))
+  # The cyber-security RAG corpus: deferred, so it costs three catalog lines
+  # until the model loads it, and cites into the same `cache` as `visit` — a
+  # retrieved passage and a visited page carry the same kind of [N] marker.
+  for spec in build_cyber_specs(cache, backend=backend, fetcher=fetcher):
+    registry.register(spec)
   return registry
 
 
